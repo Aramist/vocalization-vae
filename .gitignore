@@ -164,3 +164,12 @@ cython_debug/
 
 # I don't actually know what purpose this file serves but it's in all of my directories
 .DS_Store
+
+# Hide irrelevant files
+unmaintained/
+
+# Hide cluster stuff from github
+cluster.sh
+jsons/cluster*.json
+slurm_logs/
+sync.zsh

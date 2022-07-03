@@ -1,0 +1,11 @@
+name: vae
+channels:
+  - conda-forge
+dependencies:
+  - h5py
+  - hdf5=1.12.1
+  - numpy=1.21.5
+  - python=3.8.12
+  - pytorch
+  - pip:
+    - auraloss==0.2.2

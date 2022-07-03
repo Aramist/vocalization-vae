@@ -1,0 +1,8 @@
+{
+    "num_epochs": 1,
+    "data_path": "data_c3/merged.h5",
+    "weight_save_dir": "local/vae_weights",
+    "weight_save_interval": 1,
+    "beta_coeff": 0.01,
+    "learning_rate": 1e-4
+}

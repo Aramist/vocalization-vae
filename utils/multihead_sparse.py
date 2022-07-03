@@ -4,7 +4,7 @@ from typing import Optional
 import torch
 from torch import nn
 
-from attn_func import sparse_attn
+from .attn_func import sparse_attn
 
 
 # Optional dependency: LocalAttention

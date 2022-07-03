@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from multihead_sparse import MultiheadSparseAttn
+from .multihead_sparse import MultiheadSparseAttn
 
 
 class LearnedEncoding(nn.Module):
