@@ -1,0 +1,12 @@
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+# platform: osx-arm64
+hdf5=1.12.1=nompi_hf9525e8_104
+numpy=1.21.5=py38hb29071a_0
+python=3.8.12=hab31e5c_3_cpython
+
+# Possibly replace this with the gpu version?
+pytorch=1.11.0=cpu_py38h17550ec_1
+
+# This one is on PYPI
+auraloss
