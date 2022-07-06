@@ -57,7 +57,7 @@ def train(cfg_path, logger, *, report_freq=25):
 
     cuda = torch.cuda.is_available()
     logger.info(f"CUDA availability: {'yes' if cuda else 'no'}")
-    model = VocalizationVAE()
+    model = VocalizationVAE(crop_size=4096*6)
     if cuda:
         model.cuda()
     
