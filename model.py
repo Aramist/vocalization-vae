@@ -50,7 +50,7 @@ class VocalizationVAE(nn.Module):
                 checkpoint=True,
                 batch_first=True
             ),
-            4
+            6
         )
 
         # Encoder will produce two vectors of dim latent_dim, which encode
@@ -75,14 +75,14 @@ class VocalizationVAE(nn.Module):
                     self.num_heads,
                     block_size=8,
                     n_global=4,
-                    n_window=11,
+                    n_window=15,
                     n_random=6,
                     dim_feedforward=2048,
                     dropout=0.1,
                     checkpoint=True,
                     batch_first=True
                 ),
-                6
+                8
             )
         ])
 

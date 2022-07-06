@@ -57,7 +57,7 @@ def train(cfg_path, logger, *, report_freq=25):
 
     cuda = torch.cuda.is_available()
     logger.info(f"CUDA availability: {'yes' if cuda else 'no'}")
-    model = VocalizationVAE(crop_size=4096*6)
+    model = VocalizationVAE(crop_size=4096*6)  # About 200ms
     if cuda:
         model.cuda()
     
@@ -65,7 +65,7 @@ def train(cfg_path, logger, *, report_freq=25):
     
     opt = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
     dset = VocalizationDataset(data_path, model.crop_size, model.block_size)
-    dloader = DataLoader(dset, batch_size=64, shuffle=True, collate_fn=dset.collate_fn)
+    dloader = DataLoader(dset, batch_size=32, shuffle=True, collate_fn=dset.collate_fn)
     
     logger.info('Making save directories')
     os.makedirs(weight_save_dir, exist_ok=True)
