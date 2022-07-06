@@ -2,9 +2,10 @@
 # coding: utf-8
 import argparse
 import json
+import logging
 import os
 from os import path
-from sys import stderr
+from pathlib import Path
 
 import auraloss
 import torch
@@ -14,10 +15,6 @@ from torch.utils.data import DataLoader
 from model import VocalizationVAE
 from utils.dataloaders import VocalizationDataset
 
-
-# Patch the print function to output to stderr
-# For some reason, slurm refuses to acknowledge anything I print to stdout
-print = lambda x: print(x, file=stderr)
 
 def reload_cfg(cfg_path):
     """ I'm implementing it this way because I want to be able to change hyperparams
@@ -49,7 +46,7 @@ def loss_fn(pred, target, elbo, beta=0):
     return reconst + elbo * beta, reconst, elbo
 
 
-def train(cfg_path, *, report_freq=50):
+def train(cfg_path, logger, *, report_freq=25):
     cfg = reload_cfg(cfg_path)
     num_epochs = cfg['num_epochs']
     data_path = cfg['data_path']
@@ -59,14 +56,18 @@ def train(cfg_path, *, report_freq=50):
     lr = cfg['learning_rate']
 
     cuda = torch.cuda.is_available()
+    logger.info(f"CUDA availability: {'yes' if cuda else 'no'}")
     model = VocalizationVAE()
     if cuda:
         model.cuda()
+    
+    logger.info(model.__repr__())
     
     opt = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
     dset = VocalizationDataset(data_path, model.crop_size, model.block_size)
     dloader = DataLoader(dset, batch_size=64, shuffle=True, collate_fn=dset.collate_fn)
     
+    logger.info('Making save directories')
     os.makedirs(weight_save_dir, exist_ok=True)
 
     for epoch in range(num_epochs):
@@ -83,13 +84,13 @@ def train(cfg_path, *, report_freq=50):
             opt.step()
 
             if (n % report_freq) == (report_freq - 1):
-                print('Epoch {} progress: {}/{}. Last minibatch loss: {:.4e}. Reconstruction: {:.3f}. KL: {:.3f}'.format(
+                logger.info('Epoch {} progress: {}/{}. Last minibatch loss: {:.4e}. Reconstruction: {:.3f}. KL: {:.3f}'.format(
                     epoch+1, n+1, len(dloader),
                     loss.detach().cpu().item(),
                     reconst.detach().cpu().item(),
                     kl.detach().cpu().item()
                 ))
-                print(torch.cuda.memory_summary(abbreviated=True))
+                logger.info(torch.cuda.memory_summary(abbreviated=True))
 
             # Since the data are so large, checkpoint periodically within epochs
             if (n % weight_save_interval) == (weight_save_interval - 1):
@@ -105,7 +106,7 @@ def train(cfg_path, *, report_freq=50):
         cfg = reload_cfg(cfg_path)
         beta = cfg['beta_coeff']
         lr = cfg['learning_rate']
-        print("Epoch complete, updating lr to {:.3e} and beta to {:.3e}".format(lr, beta))
+        logger.info("Epoch complete, updating lr to {:.3e} and beta to {:.3e}".format(lr, beta))
         opt.param_groups[0]['lr'] = lr
 
 
@@ -127,4 +128,9 @@ def get_cfg():
 if __name__ == '__main__':
     cfg_path = get_cfg()
 
-    train(cfg_path)
+    cfgname = Path(cfg_path).stem
+    logger = logging.getLogger('myLogger')
+    logger.setLevel(logging.INFO)
+    logger.addHandler(logging.FileHandler(f'/mnt/home/atanelus/Heap/audio_vae/{cfgname}.log'))
+    logger.info("Initializing...")
+    train(cfg_path, logger)
