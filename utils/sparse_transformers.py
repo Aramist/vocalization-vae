@@ -4,6 +4,7 @@ from typing import Callable, Optional, Union
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from .multihead_sparse import MultiheadSparseAttn
 
@@ -35,6 +36,7 @@ class SparseTransformerEncoderLayer(nn.Module):
         n_random: int,
         dim_feedforward: int,
         dropout: float=0.1,
+        checkpoint: bool=False,
         activation: Union[str, Callable[[torch.Tensor], torch.Tensor]] = F.relu,
         batch_first: bool=True,
         norm_first: bool=False,
@@ -58,6 +60,7 @@ class SparseTransformerEncoderLayer(nn.Module):
             else:
                 raise ValueError(f'Unsupported activation function: {activation}')
         self.activation = activation
+        self.checkpoint = checkpoint
 
         self.attn = MultiheadSparseAttn(
             embed_dim=d_model,
@@ -95,7 +98,14 @@ class SparseTransformerEncoderLayer(nn.Module):
         return self.dropout2(x)
     
     def _sa_block(self, x):
-        x = self.attn(x, x, x)
+        if self.checkpoint:
+            x = torch_checkpoint(
+                self.attn,
+                x, x, x,
+                preserve_rng_state=True
+            )
+        else:
+            x = self.attn(x, x, x)
         return self.dropout1(x)
 
 

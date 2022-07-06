@@ -117,6 +117,7 @@ def sparse_attn(q: torch.Tensor,
         return dense_attn(q, k, v)
     
     q = q / np.sqrt(d_model)
+    # breaks up dim -2 (seq_len) into n_blocks and block_size
     q_block = q.view(*q.shape[:-2], n_blocks, block_size, d_model)
     q_toprow = q[..., :n_global*block_size, :]  # For the tokens that attend to all tokens
     q_sparse = q_block[..., n_global:, :, :]
@@ -152,9 +153,16 @@ def sparse_attn(q: torch.Tensor,
     win_end = lambda row: row + n_global + win_radius  # index of the last key block in the window
     # Valid indices from which random blocks may be selected given a row (relative to the end of the global rows)
     # Subtracting n_global accounts for the truncation of k_block_sparse to remove the first `n_global` rows (cols?)
-    rand_valid_idx = lambda row: [a - n_global for a in range(n_global, n_blocks) if a < win_start(row) or a > win_end(row)]
+    rand_valid_idx = lambda row: np.array([a - n_global for a in range(n_global, n_blocks) if a < win_start(row) or a > win_end(row)])
     # Save these to use when gathering from v
-    rand_sampled_cols = [np.random.choice(rand_valid_idx(row), size=n_random, replace=False) for row in range(n_global, n_blocks)]
+
+    # rewriting this to use torch rand functions instead of numpy.random.choice to ensure it works well
+    # with torch's checkpointing
+    rand_sampled_cols = []
+    for row in range(n_global, n_blocks):
+        valid_indices = rand_valid_idx(row)
+        rand_sampled_cols.append(valid_indices[torch.randint(0, len(valid_indices), (n_random,)).numpy()])
+    
     # Is there a way to directly index this that avoids building an N^2 mask array and drops the for loop?
     rand_cols = []
     for valid_idx in rand_sampled_cols:
