@@ -47,7 +47,7 @@ class VocalizationVAE(nn.Module):
                 n_random=6,
                 dim_feedforward=2048,
                 dropout=0.1,
-                checkpoint=True,
+                checkpoint=False,
                 batch_first=True
             ),
             4
@@ -79,7 +79,7 @@ class VocalizationVAE(nn.Module):
                     n_random=6,
                     dim_feedforward=2048,
                     dropout=0.1,
-                    checkpoint=True,
+                    checkpoint=False,
                     batch_first=True
                 ),
                 6

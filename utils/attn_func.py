@@ -1,5 +1,3 @@
-from typing import Optional
-
 import numpy as np
 import torch
 from torch import nn
@@ -68,7 +66,8 @@ def sparse_attn(q: torch.Tensor,
                 n_global: int,
                 n_window: int,
                 n_random: int,
-                verbose: Optional[bool]=False):
+                mask_value: float=-10000.0
+):
     """ Computes sparse attention over the provided keys and queries according to BigBird:
     <https://arxiv.org/abs/2007.14062>.
     Figure 6 in Appendix D is particularly useful in deciphering the math here.
@@ -84,8 +83,18 @@ def sparse_attn(q: torch.Tensor,
     # I think this setup only makes sense for a square attention matrix, but I'm going to
     # separate these two values just in case
     # Saving for the sake of masking padded entries after matrix multiplication
-    orig_q_len = q.shape[-2]
-    orig_v_len = v.shape[-2]
+    # Inputs are either (batch, heads, seq_len, d_model) or (batch, seq_len, d_model)
+    if q.dim() == 3:
+        k, q, v = (a.unsqueeze(1) for a in (k, q, v))  # unsqueeze in attn head dimension
+    
+    if any(mat.dim() != 4 for mat in (q, k, v)):
+        raise ValueError('Query, Key, and Value matrices are expected to have shape (batch, heads, seq_len, d_model) or (batch, seq_len, d_model) or (heads, seq_len, d_model')
+    
+    batch_size = q.shape[0]
+    n_heads = q.shape[1]
+    orig_q_len = q.shape[2]
+    orig_v_len = v.shape[2]
+    d_model = q.shape[3]
     
     if n_global < 0 or n_window < 0 or n_random < 0:
         raise ValueError('Attention parameters n_global, n_window, and n_random should be positive integers')
@@ -93,9 +102,9 @@ def sparse_attn(q: torch.Tensor,
     if n_window % 2 != 1:
         raise ValueError('Attention parameter n_window should be an odd integer')
     
-    if orig_q_len != k.shape[-2]:
+    if orig_q_len != k.shape[2]:
         raise ValueError('Key and Query sequences should have the same length.')
-    if q.shape[-1] != k.shape[-1] or q.shape[-1] != v.shape[-1]:
+    if q.shape[3] != k.shape[3] or q.shape[3] != v.shape[3]:
         raise ValueError('Query, key, and Value sequence elements should contain the same number of features.')
     
     if orig_q_len % block_size != 0:
@@ -103,172 +112,188 @@ def sparse_attn(q: torch.Tensor,
         k = pad_mat(k, block_size)
     if orig_v_len % block_size != 0:
         v = pad_mat(v, block_size)
-    
-    if verbose:
-        print('pad_q', q.shape)
-        print('pad_k', k.shape)
-        print('v', v.shape)
+
+    q_len = q.shape[2]
+    v_len = v.shape[2]
+
+    num_pad = q_len - orig_q_len
     
     # Define some useful values
-    n_blocks = q.shape[-2] // block_size
-    d_model = q.shape[-1]
+    n_blocks = q_len // block_size
     
     if n_global + n_window + n_random > n_blocks:
         return dense_attn(q, k, v)
     
     q = q / np.sqrt(d_model)
-    # breaks up dim -2 (seq_len) into n_blocks and block_size
-    q_block = q.view(*q.shape[:-2], n_blocks, block_size, d_model)
-    q_toprow = q[..., :n_global*block_size, :]  # For the tokens that attend to all tokens
-    q_sparse = q_block[..., n_global:, :, :]
+    # q_toprow: for the tokens that attend to all tokens
+    q_toprow, q_sparse = torch.split(q, [n_global * block_size, q_len - n_global * block_size], dim=2)
+    q_sparse = q_sparse.view(batch_size, n_heads, -1, block_size, d_model)
 
-    k_t_toprow = k.transpose(-1, -2)  # unblocked keys for global rows
-    k_block = k.view(*k.shape[:-2], n_blocks, block_size, d_model)
-    # Blocked keys for the global columns)
-    k_block_global = k_block[..., :n_global, :, :]
-    # Blocked keys for the remaining sparse columns
-    k_block_sparse = k_block[..., n_global:, :, :]
+    # k_t_toprow = k.transpose(-1, -2)  # unblocked keys for global rows
     
+    # k_block_global: blocked keys for the global columns)
+    # k_block_sparse: blocked keys for the remaining sparse columns
+    k_block_global, k_block_sparse = torch.split(k, [n_global * block_size, q_len - n_global * block_size], dim=2)
+    k_block_global = k_block_global.reshape(batch_size, n_heads, -1, block_size, d_model)
+    k_block_sparse = k_block_sparse.reshape(batch_size, n_heads, -1, block_size, d_model)
+    
+    # ==========================================================================
     # Computations for top row of blocks:
-    # All keys interact with first g queries
+    # All keys interact with first n_global queries
     # q (..., n_global*block_size, d) x K^T (..., d, pad_seq_len) -> (..., n_global*block_size, pad_seq_len)
-    top_row_global_scores = torch.matmul(q_toprow, k_t_toprow)
-    if verbose:
-        print('top_row_global_scores', top_row_global_scores.shape)
-    
-    
+    # top_row_global_scores = torch.matmul(q_toprow, k_t_toprow)
+    # Q * K^T
+    top_row_attn = torch.einsum('...IJ,...KJ->...IK', q_toprow, k)
+    if num_pad > 0:
+        # The last `num_pad` columns of the global rows represent zero-pad elements that should not be attended to
+        top_row_mask = torch.zeros_like(top_row_attn)
+        top_row_mask[..., -num_pad:] = mask_value
+        top_row_attn = top_row_attn + top_row_mask
+
+    # ==========================================================================
     # Start with the global columns
-    global_col = k_block_global.view(*k.shape[:-2], 1, n_global * block_size, d_model)
-    global_col = global_col.expand(*k.shape[:-2], n_blocks - n_global, -1, -1)
-    
+    global_col = k_block_global.view(batch_size, n_heads, 1, n_global * block_size, d_model)
+    global_col = global_col.expand(-1, -1, n_blocks - n_global, -1, -1)
+    global_col_attn = torch.einsum('...IJ,...KJ->...IK', q_sparse, global_col)  # (batch, heads, blocks - n_global, block_size, n_global * block_size)
+    global_col_attn = global_col_attn.view(batch_size, n_heads, -1, n_global * block_size)  # (batch, heads, num_nonglobal_elements, num_global_elements)
+    if num_pad > 0:
+        # The last `num_pad` rows of global_col_attn are zero-padding, should not be attending to anything
+        global_col_mask = torch.zeros_like(global_col_attn)
+        global_col_mask[..., -num_pad:, :] = mask_value
+        global_col_attn = global_col_attn + global_col_mask
+
+    # ==========================================================================
     # Gather the windowed columns
     # Roll out the windows
     win_radius = n_window // 2
-    windowed = torch.cat([torch.roll(k_block, shift, dims=-3) for shift in range(-win_radius, win_radius+1)[::-1]], dim=-2)
-    windowed = windowed[..., n_global:, :, :]  # Get rid of the global rows
+    windowed = torch.cat([torch.roll(k_block_sparse, shift, dims=-3) for shift in range(-win_radius, win_radius+1)[::-1]], dim=-2)
+    windowed_attn = torch.einsum('...IJ,...KJ->...IK', q_sparse, windowed)
+    # windowed_attn will have shape (batch, n_heads, num_nonglobal_elements, n_window * block_size)
+    windowed_attn = windowed_attn.view(batch_size, n_heads, q_len - block_size * n_global, n_window * block_size)
+
+    # Attempt to mask the padded elements
+    if num_pad > 0:
+        windowed_attn_mask = torch.zeros_like(windowed_attn)
+        # Prevent the padded elements from attending to any other values
+        windowed_attn_mask[..., -num_pad:, :] = mask_value
+        # Now prevent other values from attending to the padded elements
+        # The last `win_radius + 1` rows will include the final block in their receptive field
+        ng_blocks = n_blocks - n_global  # num non-global blocks
+        for row_idx in range(ng_blocks - win_radius - 1, ng_blocks):
+            # On row r (indexed such that 0 is the first non-global row), ng_blocks - r - 1 represents the index
+            # (relative to the window center) of the block containing the final elements of the sequence
+            block_idx = ng_blocks - row_idx - 1
+            win_center = win_radius * block_size
+            illegal_start_idx = win_center + block_idx * block_size + (block_size - num_pad)
+            # Everything after illegal_start_idx should be excluded, since they will either be pad elements
+            # or blocks that wrapped around to the start of the sequence
+            windowed_attn_mask[..., row_idx*block_size:(row_idx+1)*block_size, illegal_start_idx:] = mask_value
+        
+        # The first `win_radius` rows will attempt to attend to the end of the sequence
+        # , since the windows wrap around
+        for row_idx in range(win_radius):
+            num_illegal_blocks = win_radius - row_idx
+            good_start_idx = num_illegal_blocks * block_size  # Everything after this point is OK
+            windowed_attn_mask[..., row_idx*block_size:(row_idx+1)*block_size, :good_start_idx] = mask_value
+        windowed_attn = windowed_attn + windowed_attn_mask
     
+    # ==========================================================================
     # Gather the random columns
     # Computed s.t. there is no intersection between the random blocks and the window/global blocks
-    win_start = lambda row: row + n_global - win_radius  # index of the first key block in the sliding window
-    win_end = lambda row: row + n_global + win_radius  # index of the last key block in the window
+    win_start = lambda row: row - win_radius  # index of the first key block in the sliding window
+    win_end = lambda row: row + win_radius  # index of the last key block in the window
     # Valid indices from which random blocks may be selected given a row (relative to the end of the global rows)
-    # Subtracting n_global accounts for the truncation of k_block_sparse to remove the first `n_global` rows (cols?)
-    rand_valid_idx = lambda row: np.array([a - n_global for a in range(n_global, n_blocks) if a < win_start(row) or a > win_end(row)])
-    # Save these to use when gathering from v
+    rand_valid_idx = lambda row: np.array([a for a in range(n_blocks - n_global) if a < win_start(row) or a > win_end(row)])
 
     # rewriting this to use torch rand functions instead of numpy.random.choice to ensure it works well
     # with torch's checkpointing
     rand_sampled_cols = []
-    for row in range(n_global, n_blocks):
+    rand_requires_masking = []
+    for row in range(n_blocks-n_global):
         valid_indices = rand_valid_idx(row)
-        rand_sampled_cols.append(valid_indices[torch.randint(0, len(valid_indices), (n_random,)).numpy()])
+        rand_selection = torch.randint(0, len(valid_indices), (n_random,)).numpy()
+        rand_selection.sort()  # makes masking easier
+        rand_requires_masking.append(rand_selection[-1] == n_blocks-n_global-1)
+        rand_sampled_cols.append(valid_indices[rand_selection])
     
-    # Is there a way to directly index this that avoids building an N^2 mask array and drops the for loop?
-    rand_cols = []
-    for valid_idx in rand_sampled_cols:
-        # This reshape just flattens the -3 and -2 dimensions into one
-        new_shape = (*k_block_sparse.shape[:-3], n_random * block_size, d_model)
-        gather_row = k_block_sparse[..., valid_idx, :, :].reshape(new_shape)
-        rand_cols.append(gather_row)
-    rand_cols = torch.stack(rand_cols, dim=-3)
+    # Items in dim 2 will be ordered such that we can move n_random to the next dim while remaining contiguous
+    rand_gather_idx = torch.zeros((1, 1, k_block_sparse.shape[-3] * n_random, 1, 1), device=k_block_sparse.device, dtype=torch.int64)
+    for row, valid_idx in enumerate(rand_sampled_cols):
+        rand_gather_idx[0, 0, row * n_random:(row + 1) * n_random, 0, 0] = torch.from_numpy(valid_idx)
+    rand_gather_idx = rand_gather_idx.expand((batch_size, n_heads, -1, block_size, d_model))
     
-    # Finally merge everything into the dense array
-    k_t_dense = torch.cat([global_col, windowed, rand_cols], dim=-2).transpose(-1, -2)
-    
-    if verbose:
-        print('k_global_col', global_col.shape)
-        print('k_windowed', windowed.shape)
-        print('rand_cols', rand_cols.shape)
+    rand_cols = torch.gather(k_block_sparse, dim=2, index=rand_gather_idx)
+    rand_cols = rand_cols.view(batch_size, n_heads, k_block_sparse.shape[-3], n_random * block_size, d_model)
+    rand_attn = torch.einsum('...IJ,...KJ->...IK', q_sparse, rand_cols)  # Should have shape (batch_size, n_heads, non_global_blocks, block_size, n_random*block_size)
 
-        print('q_sparse', q_sparse.shape)
-        print('k_t_dense', k_t_dense.shape)
-        
-    sparse_attn_scores = torch.matmul(q_sparse, k_t_dense)
-    
-    if verbose:
-        print('sparse_attn_scores', sparse_attn_scores.shape)
-    # I think I can directly softmax into the -1 (num_attended_blocks) dim after merging it with -3 (block_size)
-    
-    
-    # Retrieve appropriate value indices:
-    # Global columns
-    v_global_col = v[..., :n_global*block_size, :].unsqueeze(-3)
-    v_global_col = v_global_col.expand(*v_global_col.shape[:-3], n_blocks - n_global, -1, -1)
-    
-    # Windowed columns
-    v_block = v.view(*v.shape[:-2], n_blocks, block_size, d_model)
-    v_window = torch.cat([torch.roll(v_block, shift, dims=-3) for shift in range(-win_radius, win_radius+1)[::-1]], dim=-2)
-    v_window = v_window[..., n_global:, :, :]
-    
+    if num_pad > 0:
+        rand_attn_mask = torch.zeros_like(rand_cols)
+        for row, needs_mask in enumerate(rand_requires_masking):
+            if not needs_mask:
+                continue
+            # Prevent zero-pad elements from being attended to randomly
+            # Since the random indices were sorted, the zero-pad elements are located at the end of the last dim
+            rand_attn_mask[:, :, row, :, -num_pad:] = mask_value
+        # Prevent zero-pad elements from randomly attending to anything
+        rand_attn_mask[:, :, -1, -num_pad:, :] = mask_value
+        rand_attn = rand_attn + rand_attn_mask
+    # I need all the attention weight tensors to have the same shape, reshaping this to (batch, n_heads, n_nonglobal_elements, n_rand * block_size)
+    rand_attn = rand_attn.view(batch_size, n_heads, -1, n_random * block_size)
+
+    # ==========================================================================
+    # Softmax
+    # Goal here is to perform a softmax without actually concatenating the involved tensors
+    # concatenation is expensive so I aim to do it only once at the very end
+    # reminder to myself that the attn variable names are: top_row_attn, global_col_attn, windowed_attn, rand_attn
+    top_row_scores = torch.softmax(top_row_attn, dim=-1)  # These contain every column already, can use normal softmax
+
+    gcol_max = global_col_attn.max(dim=-1, keepdims=True)[0]
+    wcol_max = windowed_attn.max(dim=-1, keepdims=True)[0]
+    rcol_max = rand_attn.max(dim=-1, keepdims=True)[0]  # these three are temporary
+
+    # Subtracting the maximum is just for numerical stability. Softmax is invariant to translation
+    overall_max = torch.maximum(torch.maximum(gcol_max, wcol_max), rcol_max)
+
+    # Compute numerators
+    global_col_scores = torch.exp(global_col_attn - overall_max)
+    windowed_scores = torch.exp(windowed_attn - overall_max)
+    rand_scores = torch.exp(rand_attn - overall_max)
+
+    # Calc. denominator
+    denominator = global_col_scores.sum(dim=-1, keepdims=True) + windowed_scores.sum(dim=-1, keepdims=True) + rand_scores.sum(dim=-1, keepdims=True)
+
+    global_col_scores = global_col_scores / denominator
+    windowed_scores = windowed_scores / denominator
+    rand_scores = rand_scores / denominator
+
+    # ==========================================================================
+    # Collect necessary value columns
+    top_row_values = v  # Pretty straightforward here, they attend to all values
+    top_row_output = torch.einsum('...IJ,...JK->...IK', top_row_scores, top_row_values)
+
+    global_col_vals, v_sparse = torch.split(v, [n_global * block_size, v_len - n_global * block_size], dim=2)
+    # (batch, heads, n_nonglobal_elements, n_global_elements) x (batch, heads, n_global_elements, d_model)
+    global_col_output = torch.einsum('...IJ,...JK->...IK', global_col_attn, global_col_vals)
+
+    # Value indexing pretty much mirrors key indexing
+    v_block_sparse = v_sparse.view(batch_size, n_heads, -1, block_size, d_model)
+    windowed_values = torch.cat([torch.roll(v_block_sparse, shift, dims=-3) for shift in range(-win_radius, win_radius+1)[::-1]], dim=-2)
+    # Reshape from (batch_size, n_heads, n_nonglobal_elements, n_window_elements) -> (batch_size, n_heads, n_nonglobal_blocks, block_size, n_window_elements)
+    windowed_scores = windowed_scores.view(batch_size, n_heads, -1, block_size, block_size * n_window)
+    # Each score needs to be broadcast out 'block_size' times, since they all share the same value window
+    windowed_output = torch.einsum('...IJ,...JK->...IK', windowed_scores, windowed_values).view(batch_size, n_heads, -1, d_model)
+
+
     # Random columns
-    v_rand = []
-    for valid_idx in rand_sampled_cols:
-        # This reshape just flattens the -3 and -2 dimensions into one
-        new_shape = (*v_block.shape[:-3], n_random * block_size, d_model)
-        gather_row = v_block[..., valid_idx, :, :].reshape(new_shape)
-        v_rand.append(gather_row)
-    v_rand = torch.stack(v_rand, dim=-3)
+    v_rand = torch.gather(v_block_sparse, dim=2, index=rand_gather_idx)
+    v_rand = v_rand.view(batch_size, n_heads, v_block_sparse.shape[-3], n_random * block_size, d_model)
+    # Same thing that happened with the windows happens here
+    rand_scores = rand_scores.view(batch_size, n_heads, -1, block_size, n_random * block_size)
+    rand_output = torch.einsum('...IJ,...JK->...IK', rand_scores, v_rand).view(batch_size, n_heads, -1, d_model)
     
-    # Merge them all together into the set of values attended by each corresponding key
-    # Should have shape (..., block_size * n_attended_blocks, d_model) ?
-    v_complete = torch.cat([v_global_col, v_window, v_rand], dim=-2)
-    # print('v_complete', v_complete)
-    if verbose:
-        print('v_complete', v_complete.shape)
-        print('v_global_col', v_global_col.shape)
-        print('v_window', v_window.shape)
-        print('v_rand', v_rand.shape)
-    
-    
-    # Mask illegal (duplicate) key-query pairs
-    # This comes from the overlap of the windows with the global columns
-    dup_mask = torch.zeros_like(sparse_attn_scores)
-    for row_diff in range(win_radius):
-        # Indexes into the first n windows of the first row, which intersect with the global columns
-        dup_mask[..., row_diff, :, n_global*block_size:(n_global+win_radius-row_diff)*block_size] = -np.inf
-        # Indexes into the last n windows of the last row, which wrap around to intersect with the global columns
-        if n_random == 0:
-            dup_mask[..., -row_diff, :, -(n_random + win_radius - row_diff)*block_size:] = -np.inf
-        else:
-            dup_mask[..., -row_diff, :, -(n_random + win_radius - row_diff)*block_size:-n_random*block_size] = -np.inf
-    # Mask pad elements
-    num_pad = q.shape[-2] - orig_q_len
-    # Here I'm only preventing the corresponding query elements from attending to anything because I can't
-    # think of an easy way to transpose the sparse matrix
-    
-    
-    # ===================================================================
-    # This is broken and produces nan gradients and I don't know why
-    
-    # if num_pad > 0:
-    #    dup_mask[..., -1, -num_pad:, :] = -np.inf
-    # ===================================================================
-    
-    masked_attn_scores = sparse_attn_scores + dup_mask
-    scaled_attn_scores_sparse = torch.softmax(masked_attn_scores, dim=-1)
-    if verbose:
-        print('Sum of scaled sparse attention scores', scaled_attn_scores_sparse.sum(dim=-1))
-    
-    # Compute the attention scores for the global (dense) rows
-    # Start by masking the padded indices:
-    dense_mask = torch.zeros_like(top_row_global_scores)
-    if num_pad > 0:
-        dense_mask[..., :, -num_pad:] = -np.inf
-    masked_dense_scores = top_row_global_scores + dense_mask
-    scaled_dense_scores = torch.softmax(masked_dense_scores, dim=-1)
-    dense_output = torch.matmul(scaled_dense_scores, v)
-    
-    
-    pad_sparse_output = torch.matmul(scaled_attn_scores_sparse, v_complete)
-    # Flatten out the n_blocks (-3) and block_size (-2) dimensions
-    pad_sparse_output = pad_sparse_output.view(*pad_sparse_output.shape[:-3], -1, d_model)
-    if num_pad > 0:
-        sparse_output = pad_sparse_output[..., :-num_pad, :]
-    else:
-        sparse_output = pad_sparse_output
-    if verbose:
-        print('pad_sparse_output', pad_sparse_output.shape)
-        print('sparse_output', sparse_output.shape)
-        print('dense_output', dense_output.shape)
-    
-    return torch.cat([dense_output, sparse_output], dim=-2)
+    # ==========================================================================
+    # Combine all the different attention patterns
+    pad_sparse_output = global_col_output + windowed_output + rand_output
+    sparse_output = pad_sparse_output if num_pad == 0 else pad_sparse_output[..., :-num_pad, :]
+    final_output = torch.cat([top_row_output, sparse_output], dim=-2)
+    return final_output
