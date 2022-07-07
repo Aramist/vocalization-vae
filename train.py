@@ -6,6 +6,7 @@ import logging
 import os
 from os import path
 from pathlib import Path
+import time
 
 import auraloss
 import torch
@@ -46,7 +47,7 @@ def loss_fn(pred, target, elbo, beta=0):
     return reconst + elbo * beta, reconst, elbo
 
 
-def train(cfg_path, logger, *, report_freq=25):
+def train(cfg_path, logger, *, report_freq=75):
     cfg = reload_cfg(cfg_path)
     num_epochs = cfg['num_epochs']
     data_path = cfg['data_path']
@@ -65,12 +66,13 @@ def train(cfg_path, logger, *, report_freq=25):
     
     opt = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
     dset = VocalizationDataset(data_path, model.crop_size, model.block_size)
-    dloader = DataLoader(dset, batch_size=64, shuffle=True, collate_fn=dset.collate_fn)
+    dloader = DataLoader(dset, batch_size=12, shuffle=True, collate_fn=dset.collate_fn)
     
     logger.info('Making save directories')
     os.makedirs(weight_save_dir, exist_ok=True)
 
     for epoch in range(num_epochs):
+        start_time = time.time()
         for n, data in enumerate(dloader):
             if cuda:
                 data = data.cuda()
@@ -91,6 +93,8 @@ def train(cfg_path, logger, *, report_freq=25):
                     kl.detach().cpu().item()
                 ))
                 logger.info(torch.cuda.memory_summary(abbreviated=True))
+                avg_time = '{:.1f}'.format((time.time() - start_time) / (n + 1))
+                logger.info(f'Avg. time per minibatch: {avg_time}s')
 
             # Since the data are so large, checkpoint periodically within epochs
             if (n % weight_save_interval) == (weight_save_interval - 1):
