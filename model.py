@@ -8,10 +8,10 @@ from utils.sparse_transformers import LearnedEncoding, SparseTransformerEncoder,
 class VocalizationVAE(nn.Module):
     def __init__(self, 
         crop_size: int=4096,
-        block_size: int=16,
+        block_size: int=4,
         d_model: int=512,
         num_heads: int=8,
-        latent_dim: int=32
+        latent_dim: int=16
     ):
         """ Constructs a variational autoencoder over the microphone traces
         of Mongolian gerbil vocalizations.
@@ -30,13 +30,14 @@ class VocalizationVAE(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.latent_dim = latent_dim
+        self.num_mics = 4
 
         self.in_encoding = LearnedEncoding(
-            d_model=self.d_model, max_seq_len=self.max_seq)
+            d_model=self.d_model, max_seq_len=self.max_seq + 1)
         self.out_encoding = LearnedEncoding(
             d_model=self.d_model, max_seq_len=self.max_seq)
 
-        self.data_encoding = nn.Linear(self.block_size, self.d_model)
+        self.data_encoding = nn.Linear(self.block_size * self.num_mics, self.d_model)
         self.encoder = SparseTransformerEncoder(
             SparseTransformerEncoderLayer(
                 self.d_model,
@@ -50,7 +51,7 @@ class VocalizationVAE(nn.Module):
                 checkpoint=False,
                 batch_first=True
             ),
-            6
+            5
         )
 
         # Encoder will produce two vectors of dim latent_dim, which encode
@@ -64,7 +65,7 @@ class VocalizationVAE(nn.Module):
         self.conv_expansion = nn.Conv1d(
             in_channels=2,
             out_channels=self.d_model,
-            kernel_size=3,
+            kernel_size=1,
             padding='same'
         )
 
@@ -82,13 +83,13 @@ class VocalizationVAE(nn.Module):
                     checkpoint=False,
                     batch_first=True
                 ),
-                8
+                5
             )
         ])
 
         self.to_seq = nn.Conv1d(
             in_channels=self.d_model,
-            out_channels=16,
+            out_channels=self.block_size * self.num_mics,
             kernel_size=1
         )
 
@@ -98,8 +99,8 @@ class VocalizationVAE(nn.Module):
     def encode(self, x):
         batched = x.dim() == 3
 
-        # Initial shape: (blocks, block_size)
-        embed_out = self.data_encoding(x)  # Outputs (blocks, d_model)
+        # Initial shape: (batch, blocks, block_size * n_mics)
+        embed_out = self.data_encoding(x)  # Outputs (batch, blocks, d_model)
         cls_token = torch.zeros((1, self.d_model), device=x.device)
         if batched:
             cls_token = cls_token.unsqueeze(0).expand(x.shape[0], -1, -1)
@@ -139,7 +140,7 @@ class VocalizationVAE(nn.Module):
         for decoder in self.decoder_blocks:
             decode = decoder(decode)
         decode = decode.transpose(1, 2)  # (1, seq, feat) -> (1, feat, seq)
-        return self.to_seq(decode).transpose(-1, -2).flatten(start_dim=-2)
+        return self.to_seq(decode).transpose(-1, -2).reshape(z.shape[0], -1, self.num_mics)  # 4 microphone channels
 
     def forward(self, x):
         mean, logvar = self.encode(x)

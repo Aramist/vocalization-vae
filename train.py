@@ -14,7 +14,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 
 from model import VocalizationVAE
-from utils.dataloaders import VocalizationDataset
+from utils.dataloaders import LocalizationDataset
 
 
 def reload_cfg(cfg_path):
@@ -35,11 +35,11 @@ def loss_fn(pred, target, elbo, beta=0):
         - elbo: The evidence lower bound computed by the model for this sample's posterior
         - beta: Weighting coefficient for the ELBO
     """
-    # Target is initially chunked, (batch, n_blocks, block_size)
-    target = target.flatten(start_dim=-2).unsqueeze(1)  # reshapes -> (batch, 1, n_samp)
-    pred = pred.unsqueeze(1)  # Reshapes (batch, n_samp) -> (batch, 1, n_samp)
-    # Unsqueezing the channel dimension might not be necessary, but the loss package
-    # I'm using isn't well documented and I didn't feel like checking the source myself
+    # Target is initially chunked, (batch, n_blocks, block_size * n_channels)
+    target = target.reshape(target.shape[0], -1, 4)  # Now (batch, sequence, channels)
+    # Looking at the source code, auraloss expects the sequence dim to be at position -1
+    target = target.transpose(-1, -2).contiguous()  # Now (batch, channels, sequence) and contiguous
+    pred = pred.transpose(-1, -2).contiguous()
     
     stftloss = auraloss.freq.MultiResolutionSTFTLoss()
     reconst = stftloss(pred, target)
@@ -55,18 +55,19 @@ def train(cfg_path, logger, *, report_freq=75):
     weight_save_interval = cfg['weight_save_interval']
     beta = cfg['beta_coeff']
     lr = cfg['learning_rate']
+    latent_dim = cfg['latent_dim']
 
     cuda = torch.cuda.is_available()
     logger.info(f"CUDA availability: {'yes' if cuda else 'no'}")
-    model = VocalizationVAE(crop_size=4096*6)  # About 200ms
+    model = VocalizationVAE(crop_size=4096, block_size=4,latent_dim=latent_dim)  # About 32ms
     if cuda:
         model.cuda()
     
     logger.info(model.__repr__())
     
     opt = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
-    dset = VocalizationDataset(data_path, model.crop_size, model.block_size)
-    dloader = DataLoader(dset, batch_size=12, shuffle=True, collate_fn=dset.collate_fn)
+    dset = LocalizationDataset(data_path, model.crop_size, model.block_size)
+    dloader = DataLoader(dset, batch_size=16, shuffle=True)
     
     logger.info('Making save directories')
     os.makedirs(weight_save_dir, exist_ok=True)
@@ -135,6 +136,6 @@ if __name__ == '__main__':
     cfgname = Path(cfg_path).stem
     logger = logging.getLogger('myLogger')
     logger.setLevel(logging.INFO)
-    logger.addHandler(logging.FileHandler(f'/mnt/home/atanelus/Heap/audio_vae/{cfgname}.log'))
+    logger.addHandler(logging.FileHandler(f'/mnt/home/atanelus/Heap/localization_vae/{cfgname}.log'))
     logger.info("Initializing...")
     train(cfg_path, logger)
