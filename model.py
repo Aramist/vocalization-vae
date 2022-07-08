@@ -42,12 +42,12 @@ class VocalizationVAE(nn.Module):
                 self.d_model,
                 self.num_heads,
                 block_size=8,
-                n_global=4,
-                n_window=11,
-                n_random=6,
+                n_global=2,
+                n_window=5,
+                n_random=3,
                 dim_feedforward=2048,
                 dropout=0.1,
-                checkpoint=True,
+                checkpoint=False,
                 batch_first=True
             ),
             6
@@ -74,12 +74,12 @@ class VocalizationVAE(nn.Module):
                     self.d_model,
                     self.num_heads,
                     block_size=8,
-                    n_global=4,
-                    n_window=15,
-                    n_random=6,
+                    n_global=2,
+                    n_window=5,
+                    n_random=3,
                     dim_feedforward=2048,
                     dropout=0.1,
-                    checkpoint=True,
+                    checkpoint=False,
                     batch_first=True
                 ),
                 8
