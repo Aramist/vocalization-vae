@@ -227,7 +227,7 @@ def sparse_attn(q: torch.Tensor,
     rand_attn = torch.einsum('...IJ,...KJ->...IK', q_sparse, rand_cols)  # Should have shape (batch_size, n_heads, non_global_blocks, block_size, n_random*block_size)
 
     if num_pad > 0:
-        rand_attn_mask = torch.zeros_like(rand_cols)
+        rand_attn_mask = torch.zeros_like(rand_attn)
         for row, needs_mask in enumerate(rand_requires_masking):
             if not needs_mask:
                 continue
