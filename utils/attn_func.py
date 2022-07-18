@@ -1,7 +1,7 @@
+from typing import Optional
+
 import numpy as np
 import torch
-from torch import nn
-from torch.nn import functional as F
 
 
 def pad_mat(
@@ -66,6 +66,8 @@ def sparse_attn(q: torch.Tensor,
                 n_global: int,
                 n_window: int,
                 n_random: int,
+                rand_idx: Optional[torch.Tensor]=None,
+                return_rand_idx: bool=False,
                 mask_value: float=-10000.0
 ):
     """ Computes sparse attention over the provided keys and queries according to BigBird:
@@ -199,30 +201,36 @@ def sparse_attn(q: torch.Tensor,
     
     # ==========================================================================
     # Gather the random columns
-    # Computed s.t. there is no intersection between the random blocks and the window/global blocks
-    win_start = lambda row: row - win_radius  # index of the first key block in the sliding window
-    win_end = lambda row: row + win_radius  # index of the last key block in the window
-    # Valid indices from which random blocks may be selected given a row (relative to the end of the global rows)
-    rand_valid_idx = lambda row: np.array([a for a in range(n_blocks - n_global) if a < win_start(row) or a > win_end(row)])
+    if rand_idx is None:
+        # Computed s.t. there is no intersection between the random blocks and the window/global blocks
+        win_start = lambda row: row - win_radius  # index of the first key block in the sliding window
+        win_end = lambda row: row + win_radius  # index of the last key block in the window
+        # Valid indices from which random blocks may be selected given a row (relative to the end of the global rows)
+        rand_valid_idx = lambda row: np.array([a for a in range(n_blocks - n_global) if a < win_start(row) or a > win_end(row)])
 
-    # rewriting this to use torch rand functions instead of numpy.random.choice to ensure it works well
-    # with torch's checkpointing
-    rand_sampled_cols = []
-    rand_requires_masking = []
-    for row in range(n_blocks-n_global):
-        valid_indices = rand_valid_idx(row)
-        rand_selection = torch.randint(0, len(valid_indices), (n_random,)).numpy()
-        rand_selection.sort()  # makes masking easier
-        rand_requires_masking.append(rand_selection[-1] == n_blocks-n_global-1)
-        rand_sampled_cols.append(valid_indices[rand_selection])
-    
-    # Items in dim 2 will be ordered such that we can move n_random to the next dim while remaining contiguous
-    rand_gather_idx = torch.zeros((1, 1, k_block_sparse.shape[-3] * n_random, 1, 1), device=k_block_sparse.device, dtype=torch.int64)
-    for row, valid_idx in enumerate(rand_sampled_cols):
-        rand_gather_idx[0, 0, row * n_random:(row + 1) * n_random, 0, 0] = torch.from_numpy(valid_idx)
-    rand_gather_idx = rand_gather_idx.expand((batch_size, n_heads, -1, block_size, d_model))
-    
-    rand_cols = torch.gather(k_block_sparse, dim=2, index=rand_gather_idx)
+        # rewriting this to use torch rand functions instead of numpy.random.choice to ensure it works well
+        # with torch's checkpointing
+        rand_sampled_cols = []
+        rand_requires_masking = []
+        for row in range(n_blocks-n_global):
+            valid_indices = rand_valid_idx(row)
+            rand_selection = torch.randint(0, len(valid_indices), (n_random,)).numpy()
+            rand_selection.sort()  # makes masking easier
+            rand_requires_masking.append(rand_selection[-1] == n_blocks-n_global-1)
+            rand_sampled_cols.append(valid_indices[rand_selection])
+        
+        # Items in dim 2 will be ordered such that we can move n_random to the next dim while remaining contiguous
+        rand_gather_idx = torch.zeros((1, 1, k_block_sparse.shape[-3] * n_random, 1, 1), device=k_block_sparse.device, dtype=torch.int64)
+        for row, valid_idx in enumerate(rand_sampled_cols):
+            rand_gather_idx[0, 0, row * n_random:(row + 1) * n_random, 0, 0] = torch.from_numpy(valid_idx)
+        # rand_gather_idx = rand_gather_idx.expand((1, n_heads, -1, block_size, d_model))
+    else:
+        rand_gather_idx = rand_idx
+        rand_requires_masking = [rand_gather_idx[0, 0, (row+1)*n_random-1, 0, 0] == (n_blocks - n_global - 1) for row in range(n_blocks-n_global)]
+        
+    # For cached rand_gather_idx, the expansion to batch_size prevents the validation batches, which tend to be of different size
+    # than train batches or sized inconsistently, from causing problems
+    rand_cols = torch.gather(k_block_sparse, dim=2, index=rand_gather_idx.expand((batch_size, n_heads, -1, block_size, d_model)))
     rand_cols = rand_cols.view(batch_size, n_heads, k_block_sparse.shape[-3], n_random * block_size, d_model)
     rand_attn = torch.einsum('...IJ,...KJ->...IK', q_sparse, rand_cols)  # Should have shape (batch_size, n_heads, non_global_blocks, block_size, n_random*block_size)
 
@@ -285,7 +293,7 @@ def sparse_attn(q: torch.Tensor,
 
 
     # Random columns
-    v_rand = torch.gather(v_block_sparse, dim=2, index=rand_gather_idx)
+    v_rand = torch.gather(v_block_sparse, dim=2, index=rand_gather_idx.expand((batch_size, n_heads, -1, block_size, d_model)))
     v_rand = v_rand.view(batch_size, n_heads, v_block_sparse.shape[-3], n_random * block_size, d_model)
     # Same thing that happened with the windows happens here
     rand_scores = rand_scores.view(batch_size, n_heads, -1, block_size, n_random * block_size)
@@ -296,4 +304,7 @@ def sparse_attn(q: torch.Tensor,
     pad_sparse_output = global_col_output + windowed_output + rand_output
     sparse_output = pad_sparse_output if num_pad == 0 else pad_sparse_output[..., :-num_pad, :]
     final_output = torch.cat([top_row_output, sparse_output], dim=-2)
+
+    if return_rand_idx:
+        return final_output, rand_gather_idx
     return final_output
