@@ -64,6 +64,7 @@ def train(cfg_path, logger, *, report_freq=75):
         model.cuda()
     
     logger.info(model.__repr__())
+    logger.info(f"CUDA availability: {'yes' if cuda else 'no'}")
     
     opt = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
     dset = LocalizationDataset(data_path, model.crop_size, model.block_size)
@@ -113,6 +114,7 @@ def train(cfg_path, logger, *, report_freq=75):
         lr = cfg['learning_rate']
         logger.info("Epoch complete, updating lr to {:.3e} and beta to {:.3e}".format(lr, beta))
         opt.param_groups[0]['lr'] = lr
+        opt.param_groups[1]['lr'] = lr / 10
 
 
 def get_cfg():
