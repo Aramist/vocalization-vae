@@ -55,18 +55,20 @@ def train(cfg_path, logger, *, report_freq=75):
     weight_save_interval = cfg['weight_save_interval']
     beta = cfg['beta_coeff']
     lr = cfg['learning_rate']
+    latent_dim = cfg['latent_dim']
 
     cuda = torch.cuda.is_available()
-    logger.info(f"CUDA availability: {'yes' if cuda else 'no'}")
-    model = VocalizationVAE(crop_size=4096*6)  # About 200ms
+    model = VocalizationVAE(crop_size=4096*6, latent_dim=latent_dim)  # About 200ms
     if cuda:
         model.cuda()
     
     logger.info(model.__repr__())
+    logger.info(f"CUDA availability: {'yes' if cuda else 'no'}")
     
-    opt = optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999))
+    opt = optim.Adam(model.param_groups(), lr=lr, betas=(0.9, 0.999))
+    opt.param_groups[1]['lr'] = lr / 10
     dset = VocalizationDataset(data_path, model.crop_size, model.block_size)
-    dloader = DataLoader(dset, batch_size=12, shuffle=True, collate_fn=dset.collate_fn)
+    dloader = DataLoader(dset, batch_size=24, shuffle=True, collate_fn=dset.collate_fn)
     
     logger.info('Making save directories')
     os.makedirs(weight_save_dir, exist_ok=True)
@@ -112,6 +114,7 @@ def train(cfg_path, logger, *, report_freq=75):
         lr = cfg['learning_rate']
         logger.info("Epoch complete, updating lr to {:.3e} and beta to {:.3e}".format(lr, beta))
         opt.param_groups[0]['lr'] = lr
+        opt.param_groups[1]['lr'] = lr / 10
 
 
 def get_cfg():
@@ -135,6 +138,6 @@ if __name__ == '__main__':
     cfgname = Path(cfg_path).stem
     logger = logging.getLogger('myLogger')
     logger.setLevel(logging.INFO)
-    logger.addHandler(logging.FileHandler(f'/mnt/home/atanelus/Heap/audio_vae/{cfgname}.log'))
+    logger.addHandler(logging.FileHandler(f'/mnt/home/atanelus/Heap/audio_vae/log_{cfgname}.log'))
     logger.info("Initializing...")
     train(cfg_path, logger)

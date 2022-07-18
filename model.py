@@ -1,3 +1,5 @@
+from itertools import chain
+
 import torch
 from torch import nn
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -9,7 +11,7 @@ class VocalizationVAE(nn.Module):
     def __init__(self, 
         crop_size: int=4096,
         block_size: int=16,
-        d_model: int=512,
+        d_model: int=256,
         num_heads: int=8,
         latent_dim: int=32
     ):
@@ -43,8 +45,8 @@ class VocalizationVAE(nn.Module):
                 self.num_heads,
                 block_size=8,
                 n_global=2,
-                n_window=5,
-                n_random=5,
+                n_window=11,
+                n_random=3,
                 dim_feedforward=2048,
                 dropout=0.1,
                 checkpoint=False,
@@ -64,7 +66,7 @@ class VocalizationVAE(nn.Module):
         self.conv_expansion = nn.Conv1d(
             in_channels=2,
             out_channels=self.d_model,
-            kernel_size=3,
+            kernel_size=1,
             padding='same'
         )
 
@@ -75,8 +77,8 @@ class VocalizationVAE(nn.Module):
                     self.num_heads,
                     block_size=8,
                     n_global=2,
-                    n_window=5,
-                    n_random=5,
+                    n_window=11,
+                    n_random=3,
                     dim_feedforward=2048,
                     dropout=0.1,
                     checkpoint=False,
@@ -94,6 +96,22 @@ class VocalizationVAE(nn.Module):
 
     def _clip_gradients(self):
         nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+    
+    def param_groups(self):
+        fast_params = chain(
+            self.in_encoding.parameters(),
+            self.out_encoding.parameters(),
+            self.data_encoding.parameters(),
+            self.encoder.parameters(),
+            self.expansion.parameters(),
+            self.conv_expansion.parameters(),
+            self.decoder_blocks.parameters(),
+            self.to_seq.parameters()
+        )
+        slow_params = chain(self.post_mean.parameters(), self.post_logvar.parameters())
+
+        groups = [{'params': list(fast_params)}, {'params': list(slow_params)}]
+        return groups
 
     def encode(self, x):
         batched = x.dim() == 3

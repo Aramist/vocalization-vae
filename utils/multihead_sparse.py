@@ -40,6 +40,7 @@ class MultiheadSparseAttn(nn.Module):
         self.num_heads = num_heads
         self.batch_first = batch_first
         self.use_bias = bias
+        self.rand_pattern = None
 
         self.attn_block_size = block_size
         self.attn_n_global = n_global
@@ -112,12 +113,14 @@ class MultiheadSparseAttn(nn.Module):
         
 
         # Should have shape (batch, n_head, seq_len, d_head)
-        attn_out = sparse_attn(
+        attn_out, self.rand_pattern = sparse_attn(
             Q, K, V,
             block_size = self.attn_block_size,
             n_global = self.attn_n_global,
             n_window = self.attn_n_window,
-            n_random = self.attn_n_random
+            n_random = self.attn_n_random,
+            rand_idx = self.rand_pattern,
+            return_rand_idx=True
         )
 
         # Flatten for projection
@@ -135,7 +138,6 @@ class MultiheadSparseAttn(nn.Module):
                 attn_out = attn_out.transpose(0, 1)
         
         return attn_out
-
 
 
 class LocalAttnLayer(nn.Module):
