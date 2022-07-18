@@ -113,7 +113,7 @@ class MultiheadSparseAttn(nn.Module):
         
 
         # Should have shape (batch, n_head, seq_len, d_head)
-        attn_out, self.rand_pattern = sparse_attn(
+        attn_unchecked_output = sparse_attn(
             Q, K, V,
             block_size = self.attn_block_size,
             n_global = self.attn_n_global,
@@ -122,6 +122,11 @@ class MultiheadSparseAttn(nn.Module):
             rand_idx = self.rand_pattern,
             return_rand_idx=True
         )
+        # If sparse_attn elects to use the dense attention function, rand_pattern will not be returned
+        if len(attn_unchecked_output) == 2:
+            attn_out, self.rand_pattern = attn_unchecked_output
+        else:
+            attn_out = attn_unchecked_output
 
         # Flatten for projection
         # Involves transposing and reshaping to (batch * seq_len, n_head * d_head)
