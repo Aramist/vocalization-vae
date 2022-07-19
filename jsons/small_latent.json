@@ -1,0 +1,14 @@
+{
+    "num_epochs": 100,
+    "data_path": "/mnt/ceph/users/atanelus/iteration/small_room_4/train_set.h5",
+    "weight_save_dir": "/mnt/ceph/users/atanelus/localization_vae_small_latents",
+    "weight_save_interval": 500,
+    "beta_coeff": 0.03,
+    "gamma_coeff": 0.0,
+    "learning_rate": 5e-4,
+    "latent_dim": 8,
+    "train_classification": true,
+    "n_layers": 1,
+    "arena_width": 600,
+    "arena_length": 400
+}

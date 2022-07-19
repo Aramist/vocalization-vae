@@ -1,0 +1,10 @@
+{
+    "num_epochs": 100,
+    "data_path": "/mnt/ceph/users/atanelus/iteration/small_room_4/train_set.h5",
+    "weight_save_dir": "/mnt/ceph/users/atanelus/localization_vae_finetune_weights",
+    "weight_save_interval": 500,
+    "beta_coeff": 0.01,
+    "learning_rate": 1e-4,
+    "latent_dim": 32,
+    "pretrained_weights_path": "/mnt/ceph/users/atanelus/localization_vae_weights/ep100_final.pt"
+}

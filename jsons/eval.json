@@ -1,0 +1,8 @@
+{
+    "data_path": "/mnt/ceph/users/atanelus/iteration/small_room_4/test_set.h5",
+    "latent_dim": 8,
+    "n_layers": 1,
+    "arena_width": 600,
+    "arena_length": 400,
+    "pretrained_weights_path": "/mnt/ceph/users/atanelus/localization_vae_small_latents/ep0100_final.pt"
+}

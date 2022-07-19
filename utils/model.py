@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch.distributions.multivariate_normal import MultivariateNormal
 
-from utils.sparse_transformers import LearnedEncoding, SparseTransformerEncoder, SparseTransformerEncoderLayer
+from .sparse_transformers import LearnedEncoding, SparseTransformerEncoder, SparseTransformerEncoderLayer
 
 
 class VocalizationVAE(nn.Module):
@@ -53,7 +53,7 @@ class VocalizationVAE(nn.Module):
                 checkpoint=False,
                 batch_first=True
             ),
-            5
+            4
         )
 
         # Encoder will produce two vectors of dim latent_dim, which encode
@@ -67,7 +67,7 @@ class VocalizationVAE(nn.Module):
         self.conv_expansion = nn.Conv1d(
             in_channels=2,
             out_channels=self.d_model,
-            kernel_size=1,
+            kernel_size=5,
             padding='same'
         )
 
@@ -85,14 +85,15 @@ class VocalizationVAE(nn.Module):
                     checkpoint=False,
                     batch_first=True
                 ),
-                5
+                4
             )
         ])
 
         self.to_seq = nn.Conv1d(
             in_channels=self.d_model,
             out_channels=self.block_size * self.num_mics,
-            kernel_size=1
+            kernel_size=1,
+            padding='same'
         )
 
     def _clip_gradients(self):

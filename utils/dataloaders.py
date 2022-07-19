@@ -30,3 +30,16 @@ class LocalizationDataset(Dataset):
             return data
         start_idx = randint(*valid_range)
         return data[start_idx:start_idx+self.crop_size]
+
+class ClassificationDataset(LocalizationDataset):
+    def __init__(self, file, crop_size, block_size, arena_width, arena_length):
+        super(ClassificationDataset, self).__init__(file, crop_size, block_size)
+
+        self.scale_factor = np.array([arena_width / 2, arena_length / 2])
+    
+    def __getitem__(self, idx):
+        data = super(ClassificationDataset, self).__getitem__(idx)
+        label = self.file['locations'][idx]
+
+        label /= self.scale_factor
+        return data, label
