@@ -120,11 +120,14 @@ class MultiheadSparseAttn(nn.Module):
             n_window = self.attn_n_window,
             n_random = self.attn_n_random,
             rand_idx = self.rand_pattern,
-            return_rand_idx=True
+            return_rand_idx=self.rand_pattern is None
         )
         # If sparse_attn elects to use the dense attention function, rand_pattern will not be returned
         if len(attn_unchecked_output) == 2:
-            attn_out, self.rand_pattern = attn_unchecked_output
+            if self.rand_pattern is None:
+                del self.rand_pattern
+                self.register_buffer('rand_pattern', attn_unchecked_output[1])
+            attn_out, _ = attn_unchecked_output
         else:
             attn_out = attn_unchecked_output
 
